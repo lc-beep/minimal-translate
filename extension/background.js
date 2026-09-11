@@ -6,7 +6,7 @@ function release(){active--; queue.shift()?.();}
 chrome.runtime.onMessage.addListener((m,sender,reply)=>{
  if(sender.id!==chrome.runtime.id) return;
  if(!['translate','test'].includes(m.type)) return;
- if(m.type==='test'&&sender.url!==chrome.runtime.getURL('options.html')) {reply({error:'测试只能从设置页面发起'});return;}
+ if(m.type==='test'&&sender.url?.split(/[?#]/,1)[0]!==chrome.runtime.getURL('options.html')) {reply({error:'测试只能从设置页面发起'});return;}
  (async()=>{
   await secured;
   let s=validate({...defaults,...(await chrome.storage.local.get('settings')).settings});

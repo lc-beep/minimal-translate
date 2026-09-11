@@ -1,1 +1,8 @@
-<!doctype html><html lang="zh-CN"><meta charset="utf-8"><title>简译</title><link rel="stylesheet" href="ui.css"><body class="popup"><h1>简译</h1><p>保留原文，逐段对照。</p><button id="translate">翻译 / 隐藏网页译文</button><button id="floating" class="secondary">在此网站显示悬浮按钮</button><button id="pdf" class="secondary">打开 PDF 对照阅读</button><button id="settings" class="secondary">模型与翻译设置</button><small>网页按阅读位置翻译，滚动时继续加载。</small><p id="status" role="status"></p><script src="popup.js" type="module"></script></body></html>
+<!doctype html><html lang="zh-CN"><meta charset="utf-8"><title>简译</title><link rel="stylesheet" href="ui.css"><body class="popup">
+<h1>简译</h1><p id="intro">保留原文，逐段对照。</p>
+<button id="translate" disabled>正在读取配置…</button>
+<button id="floating" class="secondary">在此网站显示悬浮按钮</button>
+<button id="settings" class="secondary">模型与翻译设置</button>
+<div class="popup-footer"><button id="pdf" class="text-button">PDF 对照阅读 · 实验功能</button></div>
+<small id="usage">滚动时继续翻译；点击网页上的「译」可隐藏译文。</small><p id="status" role="status"></p>
+<script src="popup.js" type="module"></script></body></html>

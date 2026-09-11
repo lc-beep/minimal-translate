@@ -5,7 +5,9 @@
   "scripts": {
     "build": "node build.mjs",
     "test": "node --test tests/*.test.mjs",
-    "test:browser": "node tests/browser.mjs && node tests/layout.mjs && node tests/compatibility.mjs"
+    "test:browser": "node tests/browser.mjs && node tests/layout.mjs && node tests/compatibility.mjs",
+    "package": "npm run build && python3 scripts/package.py",
+    "test:onboarding": "node tests/onboarding.mjs"
   },
   "dependencies": {
     "pdfjs-dist": "5.4.624"

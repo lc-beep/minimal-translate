@@ -1,9 +1,24 @@
-document.querySelector('#settings').onclick=()=>chrome.runtime.openOptionsPage();
+async function openSettings(){
+ const [tab]=await chrome.tabs.query({active:true,currentWindow:true});
+ const suffix=tab?.id&&/^https?:/.test(tab.url||'')?'?fromTab='+tab.id:'';
+ await chrome.tabs.create({url:chrome.runtime.getURL('options.html')+suffix});
+ window.close();
+}
+document.querySelector('#settings').onclick=()=>openSettings().catch(()=>{document.querySelector('#status').textContent='无法打开设置，请重试。';});
+(async()=>{
+ try{
+  const {settings}=await chrome.storage.local.get('settings');
+  const configured=!!(settings?.model?.trim()&&settings?.baseUrl?.trim());
+  document.querySelector('#translate').textContent=configured?'翻译此页 / 隐藏译文':'连接模型，开始使用';
+  if(!configured)document.querySelector('#intro').textContent='首次使用：先连接模型，再打开文章翻译。';
+ }catch{document.querySelector('#translate').textContent='连接模型，开始使用';}
+ finally{document.querySelector('#translate').disabled=false;}
+})();
 document.querySelector('#pdf').onclick=()=>chrome.tabs.create({url:chrome.runtime.getURL('pdf.html')});
 document.querySelector('#translate').onclick=async()=>{
  try {
   const {settings}=await chrome.storage.local.get('settings');
-  if(!settings?.model){await chrome.runtime.openOptionsPage();return;}
+  if(!settings?.model?.trim()||!settings?.baseUrl?.trim()){await openSettings();return;}
   const [tab]=await chrome.tabs.query({active:true,currentWindow:true});
   await chrome.scripting.executeScript({target:{tabId:tab.id},files:['content.js']});
   await chrome.scripting.executeScript({target:{tabId:tab.id},func:()=>window.__minimalTranslate?.toggle()});
