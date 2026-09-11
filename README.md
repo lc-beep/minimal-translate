@@ -1,6 +1,4 @@
-<img src="docs/images/logo.png" alt="简译图标" width="64" height="64">
-
-# 简译
+# 简译 <img src="docs/images/logo.png" alt="简译图标" width="36" height="36" align="absmiddle">
 
 一个轻量、开源的 Chrome / Edge 双语阅读插件。使用你自己的大语言模型翻译网页和 PDF，无广告，无需注册。
 
