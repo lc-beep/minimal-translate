@@ -14,20 +14,26 @@
   const host = document.createElement('div');
   host.id = 'minimal-translate-launcher';
   host.setAttribute('translate', 'no');
-  host.style.cssText = 'all:initial!important;position:fixed!important;right:16px!important;bottom:24%!important;z-index:2147483647!important;width:48px!important;height:48px!important;';
+  host.style.cssText = 'all:initial!important;position:fixed!important;right:16px!important;bottom:24%!important;z-index:2147483647!important;width:40px!important;height:40px!important;';
   const shadow = host.attachShadow({mode:'open'});
   const style = document.createElement('style');
-  style.textContent = `:host{color-scheme:light}button{all:unset;box-sizing:border-box;display:grid;place-items:center;width:48px;height:48px;border:4px solid white;border-radius:50%;background:#e984a7;color:white;box-shadow:0 2px 14px #3d244a24;cursor:pointer;transition:transform .15s,background .15s}button:hover{transform:scale(1.06);background:#d96992}button:focus-visible{outline:3px solid #5764b5;outline-offset:3px}button[aria-pressed=true]{background:#bd527c}svg{width:30px;height:30px;pointer-events:none}.tip{position:absolute;right:58px;top:8px;background:#30333a;color:white;border-radius:6px;padding:5px 9px;font:13px/22px system-ui;white-space:nowrap;opacity:0;pointer-events:none}button:hover+.tip,button:focus-visible+.tip{opacity:1}@media(prefers-reduced-motion:reduce){button{transition:none}}`;
+  style.textContent = `
+    :host{color-scheme:light dark;--fill:#282c32;--ink:#fff;--hover:#363b43;--tip-fill:#30333a;--tip-ink:#fff}
+    button{all:unset;box-sizing:border-box;position:relative;display:grid;place-items:center;width:40px;height:40px;border:1px solid #ffffff15;border-radius:11px;background:var(--fill);color:var(--ink);box-shadow:0 2px 7px #00000012;cursor:pointer;transition:transform .15s,background .15s;font:500 22px/1 "PingFang SC","Microsoft YaHei",sans-serif}
+    button:hover{transform:translateY(-1px);background:var(--hover)}
+    button:focus-visible{outline:3px solid #8299d5;outline-offset:3px}
+    button[aria-pressed=true]::after{content:"";position:absolute;bottom:5px;left:calc(50% - 2px);width:4px;height:4px;border-radius:50%;background:currentColor;opacity:.65}
+    .glyph{pointer-events:none}
+    .tip{position:absolute;right:50px;top:4px;background:var(--tip-fill);color:var(--tip-ink);border-radius:6px;padding:5px 9px;font:13px/22px system-ui;white-space:nowrap;opacity:0;pointer-events:none}
+    button:hover+.tip,button:focus-visible+.tip{opacity:1}
+    @media(prefers-color-scheme:dark){:host{--fill:#e5e7eb;--ink:#292d33;--hover:#f5f6f8;--tip-fill:#e5e7eb;--tip-ink:#292d33}button{border-color:#00000009}}
+    @media(prefers-reduced-motion:reduce){button{transition:none}}
+  `;
   const button = document.createElement('button');
   button.type = 'button';
-  // Original vector mark, intentionally distinct from other extensions' logos.
-  const svg = document.createElementNS('http://www.w3.org/2000/svg','svg');
-  svg.setAttribute('viewBox','0 0 32 32'); svg.setAttribute('aria-hidden','true');
-  const path = document.createElementNS(svg.namespaceURI,'path');
-  path.setAttribute('d','M4 8h15M11 4v4M7 9c1 5 5 9 11 11M16 9c-1 5-5 9-11 12M19 27l5-14 5 14M21 22h6');
-  path.setAttribute('fill','none'); path.setAttribute('stroke','currentColor');
-  path.setAttribute('stroke-width','2'); path.setAttribute('stroke-linecap','round'); path.setAttribute('stroke-linejoin','round');
-  svg.append(path); button.append(svg);
+  const glyph = document.createElement('span');
+  glyph.className='glyph';glyph.setAttribute('aria-hidden','true');glyph.textContent='译';
+  button.append(glyph);
   const tip = document.createElement('span'); tip.className = 'tip';
   shadow.append(style,button,tip); document.documentElement.append(host);
   function updateButton() {
