@@ -5,7 +5,7 @@
   const items = new Set(), queue = [], dirty = new Set();
   const byFirstNode = new WeakMap();
   const own = '.minimal-translation, #minimal-translate-launcher';
-  const skip = `pre,nav,footer,aside,form,button,input,textarea,select,script,style,noscript,svg,math,canvas,iframe,[inert],[hidden],[aria-hidden="true"],[contenteditable]:not([contenteditable="false"]),[translate="no"],[role="navigation"],[role="menu"],[role="menubar"],[role="toolbar"],[role="tablist"],[role="button"],[role="textbox"],[role="searchbox"],[role="combobox"],[role="dialog"],${own}`;
+  const skip = `pre,nav,footer,form,button,input,textarea,select,script,style,noscript,svg,math,canvas,iframe,[inert],[hidden],[aria-hidden="true"],[contenteditable]:not([contenteditable="false"]),[translate="no"],[role="navigation"],[role="menu"],[role="menubar"],[role="toolbar"],[role="tablist"],[role="button"],[role="textbox"],[role="searchbox"],[role="combobox"],[role="dialog"],${own}`;
   const semantic = 'p,h1,h2,h3,h4,h5,h6,li,blockquote,td,th,dt,dd,figcaption,[role="paragraph"],[role="heading"]';
   const reading = 'main,article,[role="main"],[role="article"]';
   const formats = new Set(['A', 'EM', 'STRONG', 'B', 'I', 'CODE', 'SUP', 'SUB', 'S', 'U']);
@@ -59,7 +59,10 @@
   }
   function excluded(el, css) {
     if (el.matches(skip)) return true;
-    if (el.matches('header,[role="banner"]') && !el.closest('article,[role="article"]')) return true;
+    if (el.matches('header,aside,[role="banner"]') && !el.closest(reading)) return true;
+    // A sibling of an explicit article is peripheral; an aside inside that
+    // article (or a main document without article wrappers) can be a reading note.
+    if(el.tagName==='ASIDE'&&!el.closest('article,[role="article"]')&&el.closest('main,[role="main"]')?.querySelector('article,[role="article"]'))return true;
     return css.display==='none' || css.visibility==='hidden' || css.visibility==='collapse' || css.opacity==='0';
   }
   function safeLayout(el) {
@@ -77,7 +80,7 @@
     if (text.length<3 || text.length>20000 || !/\p{L}/u.test(text)) return false;
     const linked=parts.reduce((n,p)=>n+(p.parentElement?.closest('a')?(p.textContent||'').trim().length:0),0);
     const heading=el.matches('h1,h2,h3,h4,h5,h6,[role="heading"]');
-    if (linked/text.length>.65 && !(heading&&el.closest(reading))) return false;
+    if (linked/text.length>.65 && !(heading&&el.closest(`${reading},section`))) return false;
     if (el.matches(semantic)) return true;
     // Generic application containers need prose, not short toolbar/menu labels.
     const letters=(text.match(/\p{L}/gu)||[]).length;
@@ -216,6 +219,10 @@
   }
   function render(item,text,{retry,translated=false}={}) {
     if(!current(item)||!item.anchor.isConnected)return;
+    const plain=value=>value.replace(/\[\[\/?JY\d+\]\]/g,'').replace(/\s+/g,' ').trim();
+    if(translated&&/^H[1-6]$/.test(item.el.tagName)&&plain(text)===plain(item.text)) {
+      item.node?.remove();item.node=null;return;
+    }
     if(!item.node) {
       item.node=document.createElement('span');item.node.className='minimal-translation';item.node.setAttribute('translate','no');
       // Preserve existing layout children and listeners. Mount inside the
@@ -231,22 +238,36 @@
     }
     item.node.style.setProperty('display',enabled?'block':'none','important');
     item.node.style.setProperty('opacity',translated?'1':'.6','important');
-    item.node.style.setProperty('font-size',translated?'1em':'.75em','important');
+    item.node.style.setProperty('font-size',translated?'1em':'13px','important');
     item.node.removeAttribute('role');item.node.removeAttribute('tabindex');item.node.onclick=null;item.node.onkeydown=null;
     if(retry){item.node.setAttribute('role','button');item.node.tabIndex=0;item.node.onclick=retry;item.node.onkeydown=e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();retry();}};}
+  }
+  async function requestTranslation(item) {
+    const message={type:'translate',text:item.text,inlineMarkup:item.marks.size>0};
+    if(/^H[1-6]$/.test(item.el.tagName)&&item.text.length<160)message.pageTitle=document.title.slice(0,300);
+    for(let attempt=0;;attempt++) {
+      if(!current(item))return;
+      try {return await chrome.runtime.sendMessage(message);}
+      catch(e) {
+        // A missing receiver means delivery did not happen. Do not retry
+        // ambiguous disconnects or model errors, which may already be billed.
+        if(attempt>=2||!String(e.message).includes('Receiving end does not exist'))throw e;
+        await new Promise(resolve=>setTimeout(resolve,250*(attempt+1)));
+      }
+    }
   }
   function pump() {
     while(enabled&&running<2&&queue.length) {
       const item=queue.shift();
       if(!current(item)){item.queued=false;continue;}
       running++;render(item,'翻译中…');updateButton();
-      Promise.resolve().then(()=>chrome.runtime.sendMessage({type:'translate',text:item.text,inlineMarkup:item.marks.size>0})).then(r=>{
+      requestTranslation(item).then(r=>{
         if(!current(item))return;
         if(r.error)throw Error(r.error);item.done=true;item.result=r.text;render(item,r.text,{translated:true});
       }).catch(e=>{
         if(!current(item))return;
         item.failed=true;
-        render(item,e.message+' · 点击重试',{retry:()=>{if(!item.queued){item.failed=false;enqueue(item);pump();}}});
+        render(item,(String(e.message).includes('Receiving end does not exist')?'翻译后台未连接，请重新加载扩展后刷新网页':e.message)+' · 点击重试',{retry:()=>{if(!item.queued){item.failed=false;enqueue(item);pump();}}});
       }).finally(()=>{running--;item.queued=false;updateButton();pump();});
     }
   }

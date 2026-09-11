@@ -11,6 +11,34 @@ function setup(html,respond=m=>({text:m.text})) {
  const calls=[];w.chrome={runtime:{sendMessage:async m=>{calls.push(m);return respond(m);}}};
  w.eval(source);return {dom,w,calls};
 }
+test('short headings receive page title context but paragraphs do not',async()=>{
+ const {dom,w,calls}=setup('<title>psf/requests: A simple HTTP library</title><main><h1>Requests</h1><p>A paragraph describing this library.</p></main>');
+ w.__minimalTranslate.toggle();await settle();
+ assert.equal(calls.find(c=>c.text==='Requests').pageTitle,'psf/requests: A simple HTTP library');
+ assert.equal(calls.find(c=>c.text.startsWith('A paragraph')).pageTitle,undefined);
+ assert.equal(w.document.querySelector('h1 .minimal-translation'),null);
+ w.__minimalTranslate.toggle();w.__minimalTranslate.toggle();await settle();
+ assert.equal(w.document.querySelector('h1 .minimal-translation'),null);
+ assert.equal(calls.filter(c=>c.text==='Requests').length,1);
+ w.__minimalTranslate.destroy();dom.window.close();
+});
+test('main content headers and aside examples translate while peripheral navigation stays untouched',async()=>{
+ const {dom,w,calls}=setup('<header><h1>Site banner</h1></header><aside><p>Outside sidebar copy.</p></aside><main><header><h1>A table tutorial</h1></header><aside><p>A relevant note in the article.</p><table><tr><th>Event</th><td>Evening concert</td></tr></table><pre>Do not translate this code.</pre></aside><aside role="navigation"><p>Related navigation links.</p></aside></main>',m=>({text:'译文 '+m.text}));
+ w.__minimalTranslate.toggle();await settle();
+ assert.deepEqual(calls.map(c=>c.text).sort(),['A table tutorial','A relevant note in the article.','Event','Evening concert'].sort());
+ assert.ok(w.document.querySelector('td .minimal-translation'));
+ assert.equal(w.document.querySelector('pre').textContent,'Do not translate this code.');
+ w.__minimalTranslate.destroy();dom.window.close();
+});
+test('linked section headings in standalone documents translate without translating navigation links',async()=>{
+ const {dom,w,calls}=setup('<nav><h3><a href="#purpose">Purpose</a></h3></nav><section><h3 id="purpose"><a href="#section">1.1. </a><a href="#purpose">Purpose</a></h3><p>Document purpose and scope.</p></section>',m=>({text:m.text.replace('Purpose','目的')}));
+ w.__minimalTranslate.toggle();await settle();
+ assert.equal(calls.length,2);
+ assert.equal(w.document.querySelector('section h3 .minimal-translation').textContent,'1.1. 目的');
+ assert.equal(w.document.querySelectorAll('section h3 .minimal-translation a').length,2);
+ assert.equal(w.document.querySelector('nav .minimal-translation'),null);
+ w.__minimalTranslate.destroy();dom.window.close();
+});
 test('starts with launcher only; translation stays inside source and remains plain text',async()=>{
  const {dom,w,calls}=setup('<main><p>Hello <a href="/docs">documentation</a> reader.</p><pre><code>const secret = 1;</code></pre><p translate="no">Do not translate me</p></main>',()=>({text:'<img src=x onerror=alert(1)> 中文译文'}));
  assert.equal(calls.length,0);assert.equal(w.document.querySelectorAll('#minimal-translate-launcher').length,1);
@@ -72,4 +100,35 @@ test('URL-only SPA navigation clears page-scoped results even without a DOM muta
 test('local text updates do not rescan unrelated paragraph subtrees',async()=>{
  const {dom,w}=setup('<main><p id="edit">Edited paragraph.</p><section><p id="unrelated">Unrelated paragraph.</p></section></main>');w.__minimalTranslate.toggle();await settle();const original=w.getComputedStyle;const seen=[];w.getComputedStyle=el=>{seen.push(el.id);return original(el);};w.document.querySelector('#edit').firstChild.data='Changed paragraph.';await new Promise(r=>setTimeout(r,230));
  assert.ok(seen.includes('edit'));assert.ok(!seen.includes('unrelated'));w.__minimalTranslate.destroy();dom.window.close();
+});
+
+
+test('retries missing background receiver but not ambiguous delivery or model errors',async()=>{
+ let attempts=0;
+ const {dom,w,calls}=setup('<main><h1>A real article title</h1></main>',()=>{
+   if(++attempts===1)throw Error('Could not establish connection. Receiving end does not exist.');
+   return {text:'文章标题'};
+ });
+ w.__minimalTranslate.toggle();await new Promise(r=>setTimeout(r,330));
+ assert.equal(calls.length,2);assert.equal(w.document.querySelector('.minimal-translation').textContent,'文章标题');
+ w.__minimalTranslate.destroy();dom.window.close();
+ for(const error of ['The message port closed before a response was received.', 'HTTP 429']) {
+   const {dom,w,calls}=setup('<main><h1>A real article title</h1></main>',()=>{throw Error(error)});
+   w.__minimalTranslate.toggle();await new Promise(r=>setTimeout(r,330));
+   assert.equal(calls.length,1);const output=w.document.querySelector('.minimal-translation');
+   assert.equal(output.style.fontSize,'13px');assert.equal(output.getAttribute('role'),'button');
+   w.__minimalTranslate.destroy();dom.window.close();
+ }
+});
+
+test('missing receiver retries are bounded and retired content is not resent',async()=>{
+ const error=()=>{throw Error('Receiving end does not exist.')};
+ const first=setup('<main><p>A paragraph waiting for the background.</p></main>',error);
+ first.w.__minimalTranslate.toggle();await new Promise(r=>setTimeout(r,850));
+ assert.equal(first.calls.length,3);
+ assert.match(first.w.document.querySelector('.minimal-translation').textContent,/翻译后台未连接/);
+ first.w.__minimalTranslate.destroy();first.dom.window.close();
+ const second=setup('<main><p>A paragraph waiting for the background.</p></main>',error);
+ second.w.__minimalTranslate.toggle();await settle();second.w.__minimalTranslate.destroy();
+ await new Promise(r=>setTimeout(r,300));assert.equal(second.calls.length,1);second.dom.window.close();
 });

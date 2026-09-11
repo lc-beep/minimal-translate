@@ -1,0 +1,23 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {readFile} from 'node:fs/promises';
+import {JSDOM} from 'jsdom';
+import {splitPdfText} from '../extension/pdf-chunks.js';
+const source=(await readFile(new URL('../extension/pdf.js',import.meta.url),'utf8')).replace(/^import .*;\n/gm,'');
+test('PDF failure preserves completed chunks, resumes without repeating them, and clears on new file',async()=>{
+ const dom=new JSDOM('<input id="file"><button id="prev"></button><button id="next"></button><button id="translate"></button><button id="settings"></button><canvas id="canvas"></canvas><span id="page"></span><div id="translation"></div><div id="status"></div>',{runScripts:'outside-only'});
+ const w=dom.window;w.splitPdfText=splitPdfText;w.HTMLCanvasElement.prototype.getContext=()=>({});
+ w.pdfjs={GlobalWorkerOptions:{},getDocument:()=>({promise:Promise.resolve({numPages:2,destroy:async()=>{},getPage:async()=>({getViewport:()=>({width:300,height:400}),render:()=>({promise:Promise.resolve()}),getTextContent:async()=>({items:[{str:Array.from({length:70},(_,i)=>`Sentence ${i} describes a distinct research method. `).join(''),hasEOL:true}]})})})})};
+ const calls=[];let fail=true;
+ w.chrome={runtime:{getURL:p=>p,sendMessage:async m=>{calls.push(m.text);if(calls.length===2&&fail)return {error:'Timeout'};return {text:'译文'+calls.length};}}};
+ w.eval(source);const $=s=>w.document.querySelector(s);
+ const open=()=>$('#file').onchange({target:{files:[{arrayBuffer:async()=>new ArrayBuffer(1)}]}});
+ await open();await $('#translate').onclick();
+ assert.equal(calls.length,2);assert.equal($('#translation').textContent,'译文1');assert.match($('#status').textContent,/未完成处继续/);
+ fail=false;await $('#translate').onclick();
+ assert.equal(calls.filter(t=>t===calls[0]).length,1);assert.match($('#status').textContent,/本页翻译完成/);
+ assert.ok($('#translation').textContent.startsWith('译文1\n\n'));
+ const before=calls.length;await $('#translate').onclick();assert.equal(calls.length,before);
+ await open();await $('#translate').onclick();assert.ok(calls.length>before);assert.ok(!$('#translation').textContent.startsWith('译文1\n'));
+ dom.window.close();
+});
