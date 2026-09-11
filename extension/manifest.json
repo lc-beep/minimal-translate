@@ -1,5 +1,5 @@
 {
- "manifest_version":3,"name":"简译 · LLM 双语阅读","version":"0.1.0","minimum_chrome_version":"116",
+ "manifest_version":3,"name":"简译 · LLM 双语阅读","version":"0.2.0","minimum_chrome_version":"116",
  "description":"自定义模型，逐段翻译网页，左右对照阅读 PDF。",
  "permissions":["activeTab","scripting","storage"],"optional_host_permissions":["https://*/*","http://*/*"],
  "background":{"service_worker":"background.js","type":"module"},
