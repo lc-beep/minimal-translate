@@ -1,10 +1,13 @@
 (() => {
   if (window.__minimalTranslate) return;
-  let enabled = false, running = 0, timer;
-  const items = new Set(), owners = new WeakSet(), queue = [];
+  let enabled = false, running = 0, timer, routeTimer, destroyed=false;
+  let route = location.href;
+  const items = new Set(), queue = [], dirty = new Set();
+  const byFirstNode = new WeakMap();
   const own = '.minimal-translation, #minimal-translate-launcher';
-  const skip = `pre,nav,header,footer,button,input,textarea,select,script,style,noscript,svg,math,[hidden],[aria-hidden="true"],[contenteditable]:not([contenteditable="false"]),[translate="no"],${own}`;
-  const blocks = 'p,h1,h2,h3,h4,h5,h6,li,blockquote,td,th,figcaption,div,section,article,main';
+  const skip = `pre,nav,footer,aside,form,button,input,textarea,select,script,style,noscript,svg,math,canvas,iframe,[inert],[hidden],[aria-hidden="true"],[contenteditable]:not([contenteditable="false"]),[translate="no"],[role="navigation"],[role="menu"],[role="menubar"],[role="toolbar"],[role="tablist"],[role="button"],[role="textbox"],[role="searchbox"],[role="combobox"],[role="dialog"],${own}`;
+  const semantic = 'p,h1,h2,h3,h4,h5,h6,li,blockquote,td,th,dt,dd,figcaption,[role="paragraph"],[role="heading"]';
+  const reading = 'main,article,[role="main"],[role="article"]';
   const formats = new Set(['A', 'EM', 'STRONG', 'B', 'I', 'CODE', 'SUP', 'SUB', 'S', 'U']);
 
   // Isolate the launcher from site CSS; it never becomes translation input.
@@ -39,59 +42,151 @@
     pump();
   }, {rootMargin:'240px'});
   function enqueue(item) {
-    if (!item.done && !item.queued && !item.failed) { item.queued=true; queue.push(item); }
-  }
-  function isBlock(node) {
-    return node.nodeType === 1 && (node.matches(blocks) || /^(block|flex|grid|table|list-item)/.test(getComputedStyle(node).display));
-  }
-  // Keep each paragraph inside its own width-constrained source element.
-  // A pair of BRs is a paragraph boundary, including whitespace between BRs.
-  function groups(el) {
-    const result=[]; let current=[], breaks=[];
-    const flush=()=>{if(current.length) result.push(current);current=[];breaks=[];};
-    for(const node of el.childNodes) {
-      if(node.nodeType===1 && (node.matches(own) || node.matches(skip))) { flush(); continue; }
-      if(isBlock(node)) {flush();continue;}
-      if(node.nodeName==='BR') {
-        breaks.push(node); if(breaks.filter(n=>n.nodeName==='BR').length>=2) flush();
-        continue;
-      }
-      if(breaks.length && node.nodeType===3 && !node.textContent.trim()){breaks.push(node);continue;}
-      current.push(...breaks,node); breaks=[];
+    if (item.active && !item.dirty && !item.done && !item.queued && !item.failed) {
+      item.queued=true; queue.push(item);
     }
-    flush(); return result;
   }
-  function serialize(nodes) {
-    const marks=new Map(); let id=0;
-    function visit(node) {
-      if(node.nodeType===3) return node.textContent;
-      if(node.nodeType!==1) return '';
-      if(node.nodeName==='BR') return '\n';
-      const text=[...node.childNodes].map(visit).join('');
-      if(!formats.has(node.nodeName)) return text;
-      const spec={tag:node.nodeName.toLowerCase()};
-      if(spec.tag==='a') {
-        try {const u=new URL(node.getAttribute('href'),location.href);if(!['http:','https:','mailto:'].includes(u.protocol))return text;spec.href=u.href;}catch{return text;}
-      }
-      const key=String(++id); marks.set(key,spec);
-      return `[[JY${key}]]${text}[[/JY${key}]]`;
-    }
-    return {text:nodes.map(visit).join('').trim(),marks};
+  function boundary(el, css = getComputedStyle(el)) {
+    // Use the computed outer display type: a SPAN/custom element can be a block,
+    // and a DIV may be inline or display:contents.
+    return el === document.body || /^(block|flow-root|flex|grid|table|list-item|inline-block|inline-flex|inline-grid|inline-table)/.test(css.display);
   }
-  function scan() {
-    for(const el of document.querySelectorAll(blocks)) {
-      if(el.closest(skip)||!el.getClientRects().length||getComputedStyle(el).visibility==='hidden')continue;
-      for(const nodes of groups(el)) {
-        if(nodes.some(n=>owners.has(n)))continue;
-        const plain=nodes.map(n=>n.textContent).join('').trim();
-        if(plain.length<3||plain.length>20000||!/[a-zA-Z\u00c0-\u024f\u4e00-\u9fff]/.test(plain))continue;
-        const {text,marks}=serialize(nodes); if(text.length>24000)continue;
-        const item={el,nodes,text,marks,anchor:nodes.at(-1)};
-        nodes.forEach(n=>owners.add(n));items.add(item);observer.observe(el);
-        const rect=el.getBoundingClientRect();if(rect.bottom>=-240&&rect.top<=innerHeight+240)enqueue(item);
+  function excluded(el, css) {
+    if (el.matches(skip)) return true;
+    if (el.matches('header,[role="banner"]') && !el.closest('article,[role="article"]')) return true;
+    return css.display==='none' || css.visibility==='hidden' || css.visibility==='collapse' || css.opacity==='0';
+  }
+  function safeLayout(el) {
+    const css=getComputedStyle(el);
+    // A new direct child of a flex/grid container changes its item structure.
+    // Read the flow content inside its items instead; do not rewrite the layout.
+    if (/flex|grid/.test(css.display) || ['TABLE','TBODY','THEAD','TFOOT','TR','UL','OL','DL'].includes(el.tagName)) return false;
+    if (['absolute','fixed','sticky'].includes(css.position)) return false;
+    if (Number.parseInt(css.webkitLineClamp)>0 || css.textOverflow==='ellipsis') return false;
+    if (/hidden|clip/.test(css.overflowY) && el.clientHeight && el.scrollHeight>el.clientHeight+2) return false;
+    return true;
+  }
+  function readable(el, parts) {
+    const text=parts.map(n=>n.nodeType===3?n.data:'\n').join('').trim();
+    if (text.length<3 || text.length>20000 || !/\p{L}/u.test(text)) return false;
+    const linked=parts.reduce((n,p)=>n+(p.parentElement?.closest('a')?(p.textContent||'').trim().length:0),0);
+    const heading=el.matches('h1,h2,h3,h4,h5,h6,[role="heading"]');
+    if (linked/text.length>.65 && !(heading&&el.closest(reading))) return false;
+    if (el.matches(semantic)) return true;
+    // Generic application containers need prose, not short toolbar/menu labels.
+    const letters=(text.match(/\p{L}/gu)||[]).length;
+    if (letters/text.length<.35) return false;
+    return text.length >= (el.closest(reading)?24:60) && (/[.!?。！？,:，：]/.test(text)||text.length>=120);
+  }
+  function collect(root) {
+    const units=[];
+    const styles=new WeakMap();
+    const css=el=>{if(!styles.has(el))styles.set(el,getComputedStyle(el));return styles.get(el);};
+    // If the dirty root is inside an excluded or hidden ancestor, remove its
+    // translations too. Checking only the root would leak hidden descendant text.
+    for(let parent=root;parent;parent=parent.parentElement) if(excluded(parent,css(parent)))return units;
+    function walk(container, owner) {
+      let parts=[],breaks=[];
+      function flush(){
+        if(parts.length && safeLayout(owner) && owner.getClientRects().length && readable(owner,parts)) {
+          const data=serialize(owner,parts);
+          if(data.text.length<=24000)units.push({el:owner,parts:[...parts],...data});
+        }
+        parts=[];breaks=[];
       }
+      function visit(node) {
+        if(node.nodeType===3) {
+          if(breaks.length&&!node.data.trim()){breaks.push(node);return;}
+          parts.push(...breaks,node);breaks=[];return;
+        }
+        if(node.nodeType!==1)return;
+        if(node.matches(own))return; // Transparent to paragraph detection.
+        if(excluded(node,css(node))){flush();return;}
+        // Floating/positioned UI is a separate layout, never inline prose.
+        if(['absolute','fixed','sticky'].includes(css(node).position)){flush();return;}
+        // Light DOM of a custom element with shadow content may not be rendered.
+        if(node.shadowRoot){flush();return;}
+        if(node.tagName==='BR') {
+          breaks.push(node);
+          if(breaks.filter(n=>n.nodeName==='BR').length>=2)flush();
+          return;
+        }
+        if(boundary(node,css(node))) {flush();walk(node,node);return;}
+        // Inline wrappers can contain block descendants or nested BR boundaries.
+        // Descending into them avoids merging or losing those paragraphs.
+        for(const child of [...node.childNodes])visit(child);
+      }
+      for(const child of [...container.childNodes])visit(child);
+      flush();
     }
-    pump();
+    walk(root,root);
+    return units;
+  }
+  function serialize(owner, parts) {
+    const marks=new Map();let nextId=0,stack=[],text='';
+    function path(node) {
+      const result=[];
+      for(let el=node.parentElement;el&&el!==owner;el=el.parentElement) {
+        if(!formats.has(el.tagName))continue;
+        const spec={tag:el.tagName.toLowerCase()};
+        if(spec.tag==='a') {
+          try {const u=new URL(el.getAttribute('href'),location.href);if(!['http:','https:','mailto:'].includes(u.protocol))continue;spec.href=u.href;}catch{continue;}
+        }
+        result.unshift({el,spec});
+      }
+      return result;
+    }
+    for(const part of parts) {
+      const ancestors=path(part);let common=0;
+      while(common<stack.length&&common<ancestors.length&&stack[common].el===ancestors[common].el)common++;
+      while(stack.length>common)text+=`[[/JY${stack.pop().id}]]`;
+      for(const ancestor of ancestors.slice(common)) {
+        const id=String(++nextId);marks.set(id,ancestor.spec);stack.push({...ancestor,id});text+=`[[JY${id}]]`;
+      }
+      text+=part.nodeName==='BR'?'\n':part.textContent;
+    }
+    while(stack.length)text+=`[[/JY${stack.pop().id}]]`;
+    text=text.trim();
+    return {text,marks,signature:text+JSON.stringify([...marks])};
+  }
+  function anchorFor(unit) {
+    let node=unit.parts.at(-1);
+    // Climb past complete inline wrappers, so translated anchors are never
+    // nested inside the original link. For a BR split, stay at that split.
+    while(node.parentElement && node.parentElement!==unit.el) {
+      let next=node.nextSibling;
+      while(next&&(next.nodeType===3&&!next.textContent.trim()||next.nodeType===1&&next.matches(own)))next=next.nextSibling;
+      if(next)break;
+      node=node.parentElement;
+    }
+    return node;
+  }
+  function retire(item) {
+    item.active=false;items.delete(item);byFirstNode.delete(item.parts[0]);
+    item.node?.remove();item.node=null;
+    if(![...items].some(other=>other.el===item.el))observer.unobserve(item.el);
+  }
+  function current(item) {
+    return item.active&&!item.dirty&&item.route===location.href&&item.parts.every(n=>n.isConnected&&item.el.contains(n))&&serialize(item.el,item.parts).signature===item.signature;
+  }
+  function scan(root=document.body) {
+    if(!root?.isConnected)return;
+    const previous=new Set([...items].filter(item=>item.el===root||root.contains(item.el)));
+    for(const unit of collect(root)) {
+      let item=byFirstNode.get(unit.parts[0]);
+      if(item && (item.signature!==unit.signature||item.el!==unit.el||item.parts.length!==unit.parts.length||item.parts.some((n,i)=>n!==unit.parts[i]))) {
+        retire(item);previous.delete(item);item=null;
+      }
+      if(!item) {
+        item={...unit,anchor:anchorFor(unit),active:true,route:location.href};
+        items.add(item);byFirstNode.set(unit.parts[0],item);observer.observe(item.el);
+      }
+      previous.delete(item);item.dirty=false;
+      if(item.node&&!item.node.isConnected)item.node=null;
+      if(item.done)render(item,item.result,{translated:true});
+      const rect=item.el.getBoundingClientRect();if(rect.bottom>=-240&&rect.top<=innerHeight+240)enqueue(item);
+    }
+    previous.forEach(retire);pump();
   }
   // Only our own numbered markers can create formatting. Never parse model HTML.
   function translatedNodes(item,text) {
@@ -114,15 +209,20 @@
     return fragment;
   }
   function render(item,text,{retry,translated=false}={}) {
-    if(!item.anchor.isConnected)return;
+    if(!current(item)||!item.anchor.isConnected)return;
     if(!item.node) {
       item.node=document.createElement('span');item.node.className='minimal-translation';item.node.setAttribute('translate','no');
-      // Span is legal inside P/LI/TD. Inherit the source typography and width.
+      // Preserve existing layout children and listeners. Mount inside the
+      // nearest flow paragraph; never add a sibling flex/grid item.
       const styles={all:'unset',display:'block','box-sizing':'border-box',width:'auto','max-width':'100%','margin-block-start':'.65em','margin-block-end':'0',padding:'0',border:'0',font:'inherit',color:'inherit','line-height':'1.75','text-align':'inherit','letter-spacing':'normal','white-space':'pre-wrap','overflow-wrap':'anywhere','text-indent':'0'};
       for(const [key,value] of Object.entries(styles))item.node.style.setProperty(key,value,'important');
       item.anchor.after(item.node);
     }
-    item.node.replaceChildren(translated?translatedNodes(item,text):document.createTextNode(text));
+    // In-place rerenders must not repeatedly mutate our own DOM.
+    if(item.renderedText!==text||item.renderedTranslated!==translated||!item.node.hasChildNodes()) {
+      item.node.replaceChildren(translated?translatedNodes(item,text):document.createTextNode(text));
+      item.renderedText=text;item.renderedTranslated=translated;
+    }
     item.node.style.setProperty('display',enabled?'block':'none','important');
     item.node.style.setProperty('opacity',translated?'1':'.6','important');
     item.node.style.setProperty('font-size',translated?'1em':'.75em','important');
@@ -132,27 +232,88 @@
   function pump() {
     while(enabled&&running<2&&queue.length) {
       const item=queue.shift();
-      if(!item.anchor.isConnected){item.queued=false;continue;}
+      if(!current(item)){item.queued=false;continue;}
       running++;render(item,'翻译中…');updateButton();
       Promise.resolve().then(()=>chrome.runtime.sendMessage({type:'translate',text:item.text,inlineMarkup:item.marks.size>0})).then(r=>{
-        if(r.error)throw Error(r.error);item.done=true;render(item,r.text,{translated:true});
+        if(!current(item))return;
+        if(r.error)throw Error(r.error);item.done=true;item.result=r.text;render(item,r.text,{translated:true});
       }).catch(e=>{
+        if(!current(item))return;
         item.failed=true;
         render(item,e.message+' · 点击重试',{retry:()=>{if(!item.queued){item.failed=false;enqueue(item);pump();}}});
       }).finally(()=>{running--;item.queued=false;updateButton();pump();});
     }
   }
-  const mutations=new MutationObserver(records=>{
-    for(const item of items)if(!item.anchor.isConnected){item.node?.remove();items.delete(item);}
-    const relevant=records.some(r=>!r.target.closest?.(own)&&[...r.addedNodes].some(n=>n.nodeType===1&&!n.matches(own)));
-    if(enabled&&relevant){clearTimeout(timer);timer=setTimeout(scan,350);}
-  });
-  mutations.observe(document.body,{childList:true,subtree:true});
-  function toggle(){
-    enabled=!enabled;
-    for(const item of items)if(item.node)item.node.style.setProperty('display',enabled?'block':'none','important');
-    updateButton();if(enabled)scan();
+  function dirtyRoot(node) {
+    let el=node.nodeType===1?node:node.parentElement;
+    while(el&&el!==document.body&&!boundary(el))el=el.parentElement;
+    return el||document.body;
   }
+  function addDirty(root) {
+    if(!root?.isConnected)return;
+    for(const prior of dirty)if(prior===root||prior.contains(root))return;
+    for(const prior of dirty)if(root.contains(prior))dirty.delete(prior);
+    dirty.add(root);
+  }
+  function flushDirty() {
+    clearTimeout(timer);timer=null;
+    if(!enabled)return;
+    const roots=[...dirty];dirty.clear();roots.forEach(scan);
+  }
+  function checkRoute() {
+    if(location.href===route)return;
+    route=location.href;[...items].forEach(retire);queue.length=0;dirty.clear();addDirty(document.body);
+    if(enabled){clearTimeout(timer);timer=setTimeout(flushDirty,160);}
+  }
+  const mutations=new MutationObserver(records=>{
+    if(destroyed)return;
+    checkRoute();
+    const roots=new Set();
+    for(const r of records) {
+      const el=r.target.nodeType===1?r.target:r.target.parentElement;
+      if(el?.closest(own))continue;
+      if(r.type==='childList') {
+        const changed=[...r.addedNodes,...r.removedNodes];
+        if(changed.length&&changed.every(n=>n.nodeType===1&&n.matches(own)))continue;
+      }
+      roots.add(dirtyRoot(r.target));
+    }
+    // A CSS change can create a new block inside a previously inline run.
+    // Reconcile the old owner too, otherwise parent and child get translated twice.
+    for(const root of [...roots])for(const item of items) {
+      if(item.el!==root&&item.el.contains(root)){roots.delete(root);roots.add(item.el);}
+    }
+    for(const item of [...items]) {
+      if(!item.el.isConnected||item.parts.some(n=>!n.isConnected)){retire(item);continue;}
+      if([...roots].some(root=>root===item.el||root.contains(item.el))) {
+        item.dirty=true;
+        // Remove outdated translations immediately, even while a newer request
+        // is waiting; current() rejects late replies for these invalidated units.
+        if(serialize(item.el,item.parts).signature!==item.signature){item.node?.remove();item.node=null;}
+      }
+    }
+    roots.forEach(addDirty);
+    if(enabled&&dirty.size&&!timer)timer=setTimeout(flushDirty,160);
+  });
+  mutations.observe(document.documentElement,{childList:true,characterData:true,attributes:true,subtree:true,attributeFilter:['class','style','hidden','aria-hidden','href','translate','contenteditable','role','inert']});
+  function toggle(){
+    enabled=!enabled;checkRoute();clearInterval(routeTimer);
+    for(const item of items)if(item.node)item.node.style.setProperty('display',enabled?'block':'none','important');
+    updateButton();
+    if(enabled){clearTimeout(timer);timer=null;dirty.clear();scan();routeTimer=setInterval(checkRoute,750);}
+  }
+  function resized(){if(enabled){addDirty(document.body);if(!timer)timer=setTimeout(flushDirty,160);}}
+  window.addEventListener('resize',resized);
+  window.addEventListener('popstate',checkRoute);
+  window.addEventListener('hashchange',checkRoute);
   button.onclick=toggle;
-  window.__minimalTranslate={toggle};updateButton();
+  function destroy() {
+    destroyed=true;enabled=false;clearTimeout(timer);clearInterval(routeTimer);
+    window.removeEventListener('resize',resized);window.removeEventListener('popstate',checkRoute);window.removeEventListener('hashchange',checkRoute);window.removeEventListener('pagehide',pageHidden);
+    mutations.disconnect();observer.disconnect?.();[...items].forEach(retire);
+    queue.length=0;dirty.clear();host.remove();delete window.__minimalTranslate;
+  }
+  function pageHidden(event){if(!event.persisted)destroy();}
+  window.addEventListener('pagehide',pageHidden);
+  window.__minimalTranslate={toggle,destroy};updateButton();
 })();
